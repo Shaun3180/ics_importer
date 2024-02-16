@@ -17,6 +17,7 @@ if (!defined('ABSPATH')) {
 
 // Define constant for debugging
 define('DEBUG', false);
+$calendar_page_id = 11914;
 
 // Hook the function to check the URL and import events
 add_action('ics_importer_cron_hook', 'ics_importer_cron_callback', 10, 2);
@@ -42,14 +43,18 @@ function ics_importer_activate()
         'Group Classes' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/groupclasses.ics',
         'Out In The Rec' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/outintherec.ics',
         'Outdoor Programs' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/outdoorPrograms.ics',
-        'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics',
-        'Red Cross Classes' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/redCross.ics',
+        'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics'
     ];
 
     // Schedule separate cron events for each category without delay
     foreach ($categories as $categoryName => $categoryUrl) {
         wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
     }
+
+    // finally, i want to trigger a save of a single calendar page:
+    // Update the post to trigger the save
+    wp_update_post(['ID' => $calendar_page_id]);
+
 }
 
 // Handle a specific category
