@@ -54,10 +54,6 @@ function ics_importer_activate()
     foreach ($categories as $categoryName => $categoryUrl) {
         wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
     }
-
-    // finally, i want to trigger a save of a single calendar page:
-    wp_update_post(['ID' => CALENDAR_PAGE_ID]);
-
 }
 
 // Handle a specific category
@@ -72,6 +68,9 @@ function ics_importer_cron_callback($categoryUrl, $categoryName)
 
     // Run the import for the specific category
     ics_importer_run($categoryUrl, $categoryName, $existing_posts);
+
+    // finally, i want to trigger a save of a single calendar page:
+    wp_update_post(['ID' => CALENDAR_PAGE_ID]);
 }
 
 function ics_importer_run($icsUrl, $categoryName, $existing_posts)
