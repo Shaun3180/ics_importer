@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 // Define constant for debugging
 define('DEBUG', false);
-$calendar_page_id = 11914;
+define('CALENDAR_PAGE_ID', 11914);
 
 // Hook the function to check the URL and import events
 add_action('ics_importer_cron_hook', 'ics_importer_cron_callback', 10, 2);
@@ -33,6 +33,10 @@ function ics_importer_deactivate()
 
 function ics_importer_activate()
 {
+     // Delete all events upon plugin activation
+     delete_all_events(false);
+
+     // Set up all categories/ics feeds
     $categories = [
         'Climbing Wall' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/climbingWall.ics',
         'Drop-in Sports' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/dropinSports.ics',
@@ -52,8 +56,7 @@ function ics_importer_activate()
     }
 
     // finally, i want to trigger a save of a single calendar page:
-    // Update the post to trigger the save
-    wp_update_post(['ID' => $calendar_page_id]);
+    wp_update_post(['ID' => CALENDAR_PAGE_ID]);
 
 }
 
@@ -128,24 +131,25 @@ function event_exists($existing_posts, $icsTitle, $icsStart, $icsEnd)
             $postStartDateTime == $icsStartDateTime &&
             $postEndDateTime == $icsEndDateTime
         ) {
-            if (DEBUG) {
+            //if (DEBUG) {
                 //error_log('Match found!');
-            }
+            //}
             if (stripos($icsTitleCleaned, 'deleted') !== false || stripos($icsTitleCleaned, 'delete') !== false) {
                 wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
-                return true; // Event not found after deletion
+                return true;
             }
 
             if (stripos($icsTitleCleaned, 'canceled') !== false || stripos($icsTitleCleaned, 'cancelled') !== false) {
-                // Update the post title to have "Cancelled" and set the post status to draft
+                // Update the post title to have "Cancelled"
                 wp_update_post(['ID' => $post->ID, 'post_title' => $icsTitle]);
+
             }
 
             return true; // Event with the same title and start date already exists
         } else {
-            if (DEBUG) {
+            //if (DEBUG) {
                 //error_log('Match not found');
-            }
+            //}
         }
     }
 
@@ -297,8 +301,8 @@ function create_event_post($event, $categoryName)
         add_post_meta($post_id, 'mec_end_datetime', date('Y-m-d h:i A', $eventEndTime), true);
         add_post_meta($post_id, 'mec_end_day_seconds', $time_end_seconds, true);
 
-        add_post_meta($post_id, 'mec_event_status', 'EventScheduled', true);
-        add_post_meta($post_id, 'mec_public', '1', true);
+        //add_post_meta($post_id, 'mec_event_status', 'EventScheduled', true);
+        //add_post_meta($post_id, 'mec_public', '1', true);
         
 
         // Define the date array
@@ -366,6 +370,9 @@ function create_event_post($event, $categoryName)
         $event['post_id'] = $post_id;
 
         import_events_to_mec_tables($event);
+
+        // trigger update of post
+        wp_update_post(['ID' => $post_id]);
 
     } else {
         // Log an error
