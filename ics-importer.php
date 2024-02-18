@@ -17,7 +17,6 @@ if (!defined('ABSPATH')) {
 
 // Define constant for debugging
 define('DEBUG', false);
-define('CALENDAR_PAGE_ID', 11914);
 
 // Hook the function to check the URL and import events
 add_action('ics_importer_cron_hook', 'ics_importer_cron_callback', 10, 2);
@@ -26,17 +25,11 @@ add_action('ics_importer_cron_hook', 'ics_importer_cron_callback', 10, 2);
 register_activation_hook(__FILE__, 'ics_importer_activate');
 register_deactivation_hook(__FILE__, 'ics_importer_deactivate');
 
-function ics_importer_deactivate()
-{
-    wp_clear_scheduled_hook('ics_importer_cron_hook');
-}
-
 function ics_importer_activate()
 {
      // Delete all events upon plugin activation
      delete_all_events(false);
 
-     // Set up all categories/ics feeds
     $categories = [
         'Climbing Wall' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/climbingWall.ics',
         'Drop-in Sports' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/dropinSports.ics',
@@ -47,38 +40,43 @@ function ics_importer_activate()
         'Group Classes' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/groupclasses.ics',
         'Out In The Rec' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/outintherec.ics',
         'Outdoor Programs' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/outdoorPrograms.ics',
-        'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics'
+        'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics',
+        'Red Cross Classes' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/redCross.ics',
     ];
 
-    // Schedule separate cron events for each category without delay
+    $delay = 0;
+
+    // Schedule separate cron events for each category
     foreach ($categories as $categoryName => $categoryUrl) {
-        wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+        if ($categoryName === 'Drop-in Swim') {
+            // Schedule "Drop-in Swim" to run every hour
+            wp_schedule_event(time() + $delay, 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+        } else {
+            // Schedule other categories to run daily
+            wp_schedule_event(time() + $delay, 'daily', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+        }
+        $delay += 60;
     }
+}
+
+
+function ics_importer_deactivate()
+{
+    wp_clear_scheduled_hook('ics_importer_cron_hook');
 }
 
 // Handle a specific category
 function ics_importer_cron_callback($categoryUrl, $categoryName)
 {
-    // Get all WordPress posts of the specified post type
-    $args = [
-        'post_type' => 'mec-events',
-        'posts_per_page' => -1, // Retrieve all posts
-    ];
-    $existing_posts = get_posts($args);
+   // Get all WordPress posts of the specified post type
+   $existing_posts = get_posts(['post_type' => 'mec-events', 'posts_per_page' => -1]);
 
     // Run the import for the specific category
     ics_importer_run($categoryUrl, $categoryName, $existing_posts);
-
-    // finally, i want to trigger a save of a single calendar page:
-    wp_update_post(['ID' => CALENDAR_PAGE_ID]);
 }
 
 function ics_importer_run($icsUrl, $categoryName, $existing_posts)
 {
-    // Delete all events immediately on plugin activation
-    //delete_all_events(false);
-    //return;
-
     // Parse ICS content and get events_data
     $events_data = parse_ics_content(file_get_contents($icsUrl));
 
@@ -125,6 +123,7 @@ function event_exists($existing_posts, $icsTitle, $icsStart, $icsEnd)
             //error_log('End comparison result: ' . ($postEndDateTime == $icsEndDateTime ? 0 : ($postEndDateTime > $icsEndDateTime ? 1 : -1)));
         }
 
+        // if Eeent with the same title and start date already exists
         if (
             str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $postTitle) == str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $icsTitleCleaned) &&
             $postStartDateTime == $icsStartDateTime &&
@@ -144,10 +143,12 @@ function event_exists($existing_posts, $icsTitle, $icsStart, $icsEnd)
 
             }
 
+            wp_update_post(['ID' => $post->ID]);
+
             return true; // Event with the same title and start date already exists
         } else {
             //if (DEBUG) {
-                //error_log('Match not found');
+                //error_log('Match not found, this is a new event');
             //}
         }
     }
@@ -167,21 +168,6 @@ function get_existing_post_id($existing_posts, $title, $start)
     }
 
     return 0; // Event not found
-}
-
-function update_existing_post($post_id, $event, $categoryName)
-{
-    // Implement logic to update the existing post based on the ICS file content
-    if (DEBUG) {
-        error_log('Existing post id for update: ' . $post_id);
-    }
-
-    // Example: Update post content
-    $updated_content = 'Updated content based on ICS file.';
-    wp_update_post([
-        'ID' => $post_id,
-        'post_content' => $updated_content,
-    ]);
 }
 
 // Function to parse ICS content and extract event data.  Also ignores 2nd instance of DESCRIPTION tag in ics
@@ -300,8 +286,8 @@ function create_event_post($event, $categoryName)
         add_post_meta($post_id, 'mec_end_datetime', date('Y-m-d h:i A', $eventEndTime), true);
         add_post_meta($post_id, 'mec_end_day_seconds', $time_end_seconds, true);
 
-        //add_post_meta($post_id, 'mec_event_status', 'EventScheduled', true);
-        //add_post_meta($post_id, 'mec_public', '1', true);
+        add_post_meta($post_id, 'mec_event_status', 'EventScheduled', true);
+        add_post_meta($post_id, 'mec_public', '1', true);
         
 
         // Define the date array
@@ -371,7 +357,8 @@ function create_event_post($event, $categoryName)
         import_events_to_mec_tables($event);
 
         // trigger update of post
-        wp_update_post(['ID' => $post_id]);
+        //wp_update_post(['ID' => $post_id]);
+        wp_update_post(get_post($post_id, ARRAY_A));
 
     } else {
         // Log an error
