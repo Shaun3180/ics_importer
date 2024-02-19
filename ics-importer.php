@@ -30,6 +30,7 @@ function ics_importer_activate()
      // Delete all events upon plugin activation
      delete_all_events(false);
 
+     // Set up all categories/ics feeds
     $categories = [
         'Climbing Wall' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/climbingWall.ics',
         'Drop-in Sports' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/dropinSports.ics',
@@ -40,25 +41,14 @@ function ics_importer_activate()
         'Group Classes' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/groupclasses.ics',
         'Out In The Rec' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/outintherec.ics',
         'Outdoor Programs' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/outdoorPrograms.ics',
-        'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics',
-        'Red Cross Classes' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/redCross.ics',
+        'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics'
     ];
 
-    $delay = 0;
-
-    // Schedule separate cron events for each category
+    // Schedule separate cron events for each category without delay
     foreach ($categories as $categoryName => $categoryUrl) {
-        if ($categoryName === 'Drop-in Swim') {
-            // Schedule "Drop-in Swim" to run every hour
-            wp_schedule_event(time() + $delay, 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
-        } else {
-            // Schedule other categories to run daily
-            wp_schedule_event(time() + $delay, 'daily', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
-        }
-        $delay += 60;
+        wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
     }
 }
-
 
 function ics_importer_deactivate()
 {
@@ -142,8 +132,6 @@ function event_exists($existing_posts, $icsTitle, $icsStart, $icsEnd)
                 wp_update_post(['ID' => $post->ID, 'post_title' => $icsTitle]);
 
             }
-
-            wp_update_post(['ID' => $post->ID]);
 
             return true; // Event with the same title and start date already exists
         } else {
