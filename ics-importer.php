@@ -1,9 +1,12 @@
 <?php
 /*
 Plugin Name: DSA ICS Importer
-Description: A plugin for importing events from ICS files into WordPress.  
+Description: A plugin for importing events from ICS files into WordPress.
 
-BE SURE YOU DEFINE HARD-CODED CATEGORY VALUES AND URLS STARTING ON LINE 40 BELOW!
+IMPORTANT NOTES:
+
+BE SURE YOU DEFINE HARD-CODED CATEGORY VALUES AND URLS STARTING ON LINE 47 BELOW!
+ALSO BE SURE THAT YOU HAVE PAUSED THE MEC_SCHEDULER CRON TASK IN CRONTROL
 
 This code is provided “as is” without warranty of any kind, expressed or implied.
 Version: 1.0
@@ -25,12 +28,24 @@ add_action('ics_importer_cron_hook', 'ics_importer_cron_callback', 10, 2);
 register_activation_hook(__FILE__, 'ics_importer_activate');
 register_deactivation_hook(__FILE__, 'ics_importer_deactivate');
 
-function ics_importer_activate()
+function ics_importer_deactivate()
 {
-     // Delete all events upon plugin activation
-     delete_all_events(false);
+    wp_clear_scheduled_hook('ics_importer_cron_hook');
+}
 
-     // Set up all categories/ics feeds
+// Shortcode to trigger the import (removed for cron scheduling)
+// add_shortcode('run_ics_importer', 'run_ics_importer_shortcode');
+
+// Schedule cron events for each category
+function ics_importer_activate()
+{ 
+    // Delete all events upon plugin activation
+    //delete_all_events(false);
+
+    // Disable MEC scheduler.  It deletes entries from mec_events that I've manually added.
+    wp_clear_scheduled_hook('mec_scheduler');
+    
+    // Set up all categories/ics feeds
     $categories = [
         'Climbing Wall' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/climbingWall.ics',
         'Drop-in Sports' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/dropinSports.ics',
@@ -44,22 +59,38 @@ function ics_importer_activate()
         'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics'
     ];
 
+    if (DEBUG) {
+        $categories = [
+            'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/test.ics'
+        ];
+    }
+
     // Schedule separate cron events for each category without delay
+    //foreach ($categories as $categoryName => $categoryUrl) {
+    //    wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+    //}
+
+    // Schedule separate cron events for each category
     foreach ($categories as $categoryName => $categoryUrl) {
         wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+        if ($categoryName === 'Drop-in Swim') {
+            // Schedule "Drop-in Swim" to run every hour
+            wp_schedule_event(time(), 'hourly', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+        } else {
+            // Schedule other categories to run daily
+            wp_schedule_event(time() , 'daily', 'ics_importer_cron_hook', [$categoryUrl, $categoryName]);
+        }
     }
-}
-
-function ics_importer_deactivate()
-{
-    wp_clear_scheduled_hook('ics_importer_cron_hook');
 }
 
 // Handle a specific category
 function ics_importer_cron_callback($categoryUrl, $categoryName)
 {
-   // Get all WordPress posts of the specified post type
-   $existing_posts = get_posts(['post_type' => 'mec-events', 'posts_per_page' => -1]);
+    // Disable MEC scheduler.  It deletes entries from mec_events that I've manually added.
+    wp_clear_scheduled_hook('mec_scheduler');
+
+    // Get all WordPress posts of the specified post type
+    $existing_posts = get_posts(['post_type' => 'mec-events', 'posts_per_page' => -1]);
 
     // Run the import for the specific category
     ics_importer_run($categoryUrl, $categoryName, $existing_posts);
@@ -69,8 +100,6 @@ function ics_importer_run($icsUrl, $categoryName, $existing_posts)
 {
     // Parse ICS content and get events_data
     $events_data = parse_ics_content(file_get_contents($icsUrl));
-
-    $imported_events = 0; // Counter for imported events
 
     foreach ($events_data as $event) {
         // Check if the event already exists
@@ -82,12 +111,6 @@ function ics_importer_run($icsUrl, $categoryName, $existing_posts)
                 }
 
                 create_event_post($event, $categoryName);
-                $imported_events++;
-
-                // Break the loop if 2 events are imported
-                if ($imported_events >= 2 && DEBUG) {
-                    break;
-                }
             }
         }
     }
@@ -102,26 +125,37 @@ function event_exists($existing_posts, $icsTitle, $icsStart, $icsEnd)
     foreach ($existing_posts as $post) {
         $postTitle = strtolower(preg_replace('/[^A-Za-z0-9]/', '', $post->post_title));
         $postStartStr = get_post_meta($post->ID, 'mec_start_datetime', true);
-        $postStartDateTime = new DateTime($postStartStr);
         $postEndStr = get_post_meta($post->ID, 'mec_end_datetime', true);
-        $postEndDateTime = new DateTime($postEndStr);
 
-        if (DEBUG) {
-            // 0 means equal
-            //error_log('Title comparison result: ' . strcmp(str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $icsTitleCleaned), str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $postTitle)));
-            //error_log('Start comparison result: ' . ($postStartDateTime == $icsStartDateTime ? 0 : ($postStartDateTime > $icsStartDateTime ? 1 : -1)));
-            //error_log('End comparison result: ' . ($postEndDateTime == $icsEndDateTime ? 0 : ($postEndDateTime > $icsEndDateTime ? 1 : -1)));
+        // Check if 'mec_start_datetime' and 'mec_end_datetime' are valid datetime strings
+        if (!$postStartStr || !$postEndStr) {
+           continue; 
         }
 
-        // if Eeent with the same title and start date already exists
+        $postStartDateTime = new DateTime($postStartStr);
+        $postEndDateTime = new DateTime($postEndStr);
+        
+        // Use built-in DateTime method for comparison
+        $startComparisonResult = $postStartDateTime->diff($icsStartDateTime)->invert == 0;
+        $endComparisonResult = $postEndDateTime->diff($icsEndDateTime)->invert == 0;
+
+        if (DEBUG) {
+            $titleComparisonResult = strcmp(str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $icsTitleCleaned), str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $postTitle));       
+
+            if ($titleComparisonResult === 1) error_log('Title comparison values: ' . $icsTitleCleaned . ' | ' . $postTitle); 
+            if (!$startComparisonResult) error_log('Start comparison values: ' . $postStartDateTime->format('Y-m-d H:i:s') . ' | ' . $icsStartDateTime->format('Y-m-d H:i:s'));
+            if (!$endComparisonResult) error_log('End comparison values: ' . $postEndDateTime->format('Y-m-d H:i:s') . ' | ' . $icsEndDateTime->format('Y-m-d H:i:s'));
+        }
+
+        // if Event with the same title, start date and end date already exists
         if (
             str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $postTitle) == str_ireplace(['canceled', 'deleted', 'cancelled', 'delete'], '', $icsTitleCleaned) &&
-            $postStartDateTime == $icsStartDateTime &&
-            $postEndDateTime == $icsEndDateTime
+            $startComparisonResult &&
+            $endComparisonResult
         ) {
-            //if (DEBUG) {
-                //error_log('Match found!');
-            //}
+            if (DEBUG) {
+                error_log('Match found!');
+            }
             if (stripos($icsTitleCleaned, 'deleted') !== false || stripos($icsTitleCleaned, 'delete') !== false) {
                 wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
                 return true;
@@ -133,11 +167,11 @@ function event_exists($existing_posts, $icsTitle, $icsStart, $icsEnd)
 
             }
 
-            return true; // Event with the same title and start date already exists
+            return true; // Event with the same title, start date and end date already exists
         } else {
-            //if (DEBUG) {
-                //error_log('Match not found, this is a new event');
-            //}
+            if (DEBUG) {
+                error_log('Match not found, this is a new event');
+            }
         }
     }
 
@@ -259,25 +293,6 @@ function create_event_post($event, $categoryName)
         $time_start_seconds = date('H', $eventStartTime) * 3600 + date('i', $eventStartTime) * 60 + date('s', $eventStartTime);
         $time_end_seconds = date('H', $eventEndTime) * 3600 + date('i', $eventEndTime) * 60 + date('s', $eventEndTime);
 
-        // Insert into wp_postmeta table
-        add_post_meta($post_id, 'mec_start_date', date('Y-m-d', $eventStartTime), true);
-        add_post_meta($post_id, 'mec_start_time_hour', date('g', $eventStartTime), true);
-        add_post_meta($post_id, 'mec_start_time_minutes', date('i', $eventStartTime), true);
-        add_post_meta($post_id, 'mec_start_time_ampm', date('A', $eventStartTime), true);
-        add_post_meta($post_id, 'mec_start_datetime', date('Y-m-d h:i A', $eventStartTime), true);
-        add_post_meta($post_id, 'mec_start_day_seconds', $time_start_seconds, true);
-
-        add_post_meta($post_id, 'mec_end_date', date('Y-m-d', $eventEndTime), true);
-        add_post_meta($post_id, 'mec_end_time_hour', date('g', $eventEndTime), true);
-        add_post_meta($post_id, 'mec_end_time_minutes', date('i', $eventEndTime), true);
-        add_post_meta($post_id, 'mec_end_time_ampm', date('A', $eventEndTime), true);
-        add_post_meta($post_id, 'mec_end_datetime', date('Y-m-d h:i A', $eventEndTime), true);
-        add_post_meta($post_id, 'mec_end_day_seconds', $time_end_seconds, true);
-
-        add_post_meta($post_id, 'mec_event_status', 'EventScheduled', true);
-        add_post_meta($post_id, 'mec_public', '1', true);
-        
-
         // Define the date array
         $date_array = [
             'start' => [
@@ -306,11 +321,76 @@ function create_event_post($event, $categoryName)
         // Serialize the date array
         $serialized_date_array = serialize($date_array);
 
-        // Insert 'mec_date' into wp_postmeta table
-        add_post_meta($post_id, 'mec_date', $serialized_date_array, true);
+        // Array of event meta data
+        $meta_data = array(
+            array('meta_key' => 'mec_start_date', 'meta_value' => date('Y-m-d', $eventStartTime)),
+            array('meta_key' => 'mec_start_time_hour', 'meta_value' => date('g', $eventStartTime)),
+            array('meta_key' => 'mec_start_time_minutes', 'meta_value' => date('i', $eventStartTime)),
+            array('meta_key' => 'mec_start_time_ampm', 'meta_value' => date('A', $eventStartTime)),
+            array('meta_key' => 'mec_start_datetime', 'meta_value' => date('Y-m-d h:i A', $eventStartTime)),
+            array('meta_key' => 'mec_start_day_seconds', 'meta_value' => $time_start_seconds),
+            array('meta_key' => 'mec_end_date', 'meta_value' => date('Y-m-d', $eventEndTime)),
+            array('meta_key' => 'mec_end_time_hour', 'meta_value' => date('g', $eventEndTime)),
+            array('meta_key' => 'mec_end_time_minutes', 'meta_value' => date('i', $eventEndTime)),
+            array('meta_key' => 'mec_end_time_ampm', 'meta_value' => date('A', $eventEndTime)),
+            array('meta_key' => 'mec_end_datetime', 'meta_value' => date('Y-m-d h:i A', $eventEndTime)),
+            array('meta_key' => 'mec_end_day_seconds', 'meta_value' => $time_end_seconds),
+            array('meta_key' => 'mec_allday', 'meta_value' => '0'),
+            array('meta_key' => 'one_occurrence', 'meta_value' => '0'),       
+            array('meta_key' => 'mec_hide_time', 'meta_value' => '0'),
+            array('meta_key' => 'mec_hide_end_time', 'meta_value' => '0'),
+            array('meta_key' => 'mec_timezone', 'meta_value' => 'global'),
+            array('meta_key' => 'mec_countdown_method', 'meta_value' => 'global'),
+            array('meta_key' => 'mec_style_per_event', 'meta_value' => 'global'),
+            array('meta_key' => 'mec_repeat_status', 'meta_value' => '0'),
+            array('meta_key' => 'mec_repeat_interval', 'meta_value' => '1'),
+            array('meta_key' => 'mec_repeat_end_at_occurrences', 'meta_value' => '9'),
+            array('meta_key' => 'mec_sequence', 'meta_value' => '1'),
+            array('meta_key' => 'mec_date', 'meta_value' => $serialized_date_array),
+            array('meta_key' => 'mec_organizer_id', 'meta_value' => '1'),
+            array('meta_key' => 'mec_public', 'meta_value' => '1'),
+            array('meta_key' => 'mec_repeat_type', 'meta_value' => ''),
+            array('meta_key' => 'mec_repeat_end', 'meta_value' => ''),
+            array('meta_key' => 'mec_repeat_end_at_date', 'meta_value' => ''),
+            //array('meta_key' => 'mec_color', 'meta_value' => ''),
+            //array('meta_key' => 'mec_dont_show_map', 'meta_value' => '0'),
+            //array('meta_key' => 'mec_read_more', 'meta_value' => ''),
+            //array('meta_key' => 'mec_more_info', 'meta_value' => ''),
+            //array('meta_key' => 'mec_more_info_title', 'meta_value' => ''),
+            //array('meta_key' => 'mec_more_info_target', 'meta_value' => '_self'),
+            //array('meta_key' => 'mec_cost', 'meta_value' => ''),
+            //array('meta_key' => 'mec_cost_auto_calculate', 'meta_value' => '0'),
+            //array('meta_key' => 'mec_currency', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_additional_organizer_ids', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_additional_location_ids', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_repeat', 'meta_value' => 'a:6:{s:4:"type";s:5:"daily";s:8:"interval";s:1:"1";s:8:"advanced";s:0:"";s:3:"end";s:5:"never";s:11:"end_at_date";s:0:"";s:18:"end_at_occurrences";s:2:"10";}'),
+            //array('meta_key' => 'mec_certain_weekdays', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_comment', 'meta_value' => ''),
+            //array('meta_key' => 'mec_trailer_url', 'meta_value' => ''),
+            //array('meta_key' => 'mec_trailer_title', 'meta_value' => ''),
+            //array('meta_key' => 'mec_advanced_days', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_in_days', 'meta_value' => ''),
+            //array('meta_key' => 'mec_not_in_days', 'meta_value' => ''),
+            //array('meta_key' => 'mec_booking', 'meta_value' => 'a:12:{s:24:"bookings_limit_unlimited";s:1:"0";s:14:"bookings_limit";s:0:"";s:28:"bookings_minimum_per_booking";s:1:"1";s:24:"bookings_all_occurrences";s:1:"0";s:33:"bookings_all_occurrences_multiple";s:1:"0";s:26:"show_booking_form_interval";s:0:"";s:35:"stop_selling_after_first_occurrence";s:1:"0";s:11:"auto_verify";s:6:"global";s:12:"auto_confirm";s:6:"global";s:29:"bookings_booking_button_label";s:0:"";s:29:"bookings_user_limit_unlimited";s:1:"1";s:19:"bookings_user_limit";s:0:"";}'),
+            //array('meta_key' => 'mec_tickets', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_fees_global_inheritance', 'meta_value' => '1'),
+            //array('meta_key' => 'mec_fees', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_ticket_variations_global_inheritance', 'meta_value' => '1'),
+            //array('meta_key' => 'mec_ticket_variations', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_reg_fields_global_inheritance', 'meta_value' => '1'),
+            //array('meta_key' => 'mec_reg_fields', 'meta_value' => 'a:0:{}'),
+            //array('meta_key' => 'mec_bfixed_fields', 'meta_value' => 'a:0:{}')
 
-        // Add mec_organizer_id
-        add_post_meta($post_id, 'mec_organizer_id', 1, true);
+            // this breaks shit when you uncomment it
+            //array('meta_key' => 'mec_hourly_schedules', 'meta_value' => 'a:0:{}'),
+
+
+        );
+
+        // Loop through meta data and add_post_meta
+        foreach ($meta_data as $data) {
+            add_post_meta($post_id, $data['meta_key'], $data['meta_value']);
+        }
 
         // Set category
         $category_name = $categoryName;
