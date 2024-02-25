@@ -18,13 +18,12 @@ if (!defined('ABSPATH')) {
     wp_die('Direct script access denied.');
 }
 
-// Define constant for debugging
 define('DEBUG', false);
 
 // Hook the function to check the URL and import events
 add_action('ics_importer_cron_hook', 'ics_importer_cron_callback', 10, 2);
 
-// Schedule the cron event to run every night
+// Schedule the cron event
 register_activation_hook(__FILE__, 'ics_importer_activate');
 register_deactivation_hook(__FILE__, 'ics_importer_deactivate');
 
@@ -56,7 +55,7 @@ function ics_importer_activate()
         'Radical Self Love' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/selflove.ics',
     ];
 
-    // if debug mode just handle one category
+    // if debug mode just handle a couple categories
     if (DEBUG) {
         $categories = [
             'Drop-in Swim' => 'https://wsprod.colostate.edu/cwis199/everficourses/feed/test.ics',
@@ -93,92 +92,89 @@ function ics_importer_run($icsUrl, $categoryName)
 {
     // Parse ICS content and get events_data
     $ics_data = parse_ics_content(file_get_contents($icsUrl));
-
-    // Fetch all MEC posts
+    
+     // Fetch all MEC posts from WordPress
     $mec_posts = get_mec_events($categoryName);
 
-    // Log the count of MEC posts in DEBUG mode
     if (DEBUG) {
         //error_log('MEC Posts Count: ' . count($mec_posts));
     }
 
-    // Create an associative array to store existing UIDs of events in the .ics file
-    $ics_UIDs = [];
+    $ics_keys = update_or_create_events($ics_data, $mec_posts, $categoryName);
+    delete_nonexistent_events($mec_posts, $ics_keys);
+}
 
-    // Update or create events
+function delete_nonexistent_events($mec_posts, $ics_keys)
+{
+    foreach ($mec_posts as $mec_post) {
+        $mec_key = get_mec_signature($mec_post);
+
+        if (!isset($ics_keys[$mec_key])) {
+            wp_delete_post($mec_post->ID, true);
+        }
+    }
+}
+
+function update_or_create_events($ics_data, $mec_posts, $categoryName)
+{
+    $ics_keys = [];
+
     foreach ($ics_data as $ics_event) {
-        // Check if the event already exists
+        $ics_key = get_ics_signature($ics_event);
         $event_exists = false;
+
         foreach ($mec_posts as $mec_post) {
-            if (event_exists($ics_event, $mec_post)) {
+            if ($ics_key === get_mec_signature($mec_post)) {
                 $event_exists = true;
                 break;
             }
         }
 
-        // If event does not exist in mec posts, then create new event
         if (!$event_exists) {
             create_event_post($ics_event, $categoryName);
         }
 
-        // Add UID of current .ics event to the array
-        $ics_UIDs[$ics_event['uid']] = true;
+        $ics_keys[$ics_key] = true;
     }
 
-    // Delete events from WP that no longer exist in the .ics file
-    foreach ($mec_posts as $mec_post) {
-        $postID = is_object($mec_post) ? $mec_post->ID : (is_array($mec_post) ? $mec_post['ID'] : null);
-        $postUID = get_post_meta($postID, 'mec_ics_uid', true);
+    return $ics_keys;
+}
 
-        // If the UID does not exist in our array of UIDs from the .ics file, delete the post
-        if (!isset($ics_UIDs[$postUID])) {
-            wp_delete_post($postID, true);
-        }
-    }
+function get_ics_signature($event)
+{
+    $icsTitleCleaned = strtolower(preg_replace('/[^A-Za-z0-9\-.,:_]/', '', $event['title']));
+    $icsStartDateTime = new DateTime($event['start']);
+    $icsEndDateTime = new DateTime($event['end']);
+
+    //if (DEBUG) {
+    //    $titleComparisonResult = strcmp($icsTitleCleaned, $postTitle);
+    //    error_log('Title match! ' . $postTitle . ' | ' . $icsTitleCleaned);
+    //    error_log('Start match! ' . $postStartDateTime->format('Y-m-d H:i:s') . ' | ' . $icsStartDateTime->format('Y-m-d H:i:s'));
+    //    error_log('End match! ' . $postEndDateTime->format('Y-m-d H:i:s') . ' | ' . $icsEndDateTime->format('Y-m-d H:i:s'));
+    //}
+
+    return $icsTitleCleaned . $icsStartDateTime->format('Y-m-d H:i:s') . $icsEndDateTime->format('Y-m-d H:i:s');
+}
+
+function get_mec_signature($event)
+{
+    $postID = is_object($event) ? $event->ID : (is_array($event) ? $event['ID'] : null);
+    $postTitle = is_object($event) ? $event->post_title : (is_array($event) ? $event['post_title'] : null);
+    $postTitle = strtolower(preg_replace('/[^A-Za-z0-9\-.,:_]/', '', $postTitle));
+    $postStartStr = get_post_meta($postID, 'mec_start_datetime', true);
+    $postEndStr = get_post_meta($postID, 'mec_end_datetime', true);
+    $postStartDateTime = new DateTime($postStartStr);
+    $postEndDateTime = new DateTime($postEndStr);
+
+    return $postTitle . $postStartDateTime->format('Y-m-d H:i:s') . $postEndDateTime->format('Y-m-d H:i:s');
 }
 
 function event_exists($ics_event, $mec_post)
 {
-    $postID = is_object($mec_post) ? $mec_post->ID : (is_array($mec_post) ? $mec_post['ID'] : null);
-     
-    if( $postID ){
-        $postStartStr = get_post_meta($postID, 'mec_start_datetime', true);
-        $postEndStr = get_post_meta($postID, 'mec_end_datetime', true);
-        // get post title too
-        $postTitle = is_object($mec_post) ? $mec_post->post_title : (is_array($mec_post) ? $mec_post['post_title'] : null);
-        $postTitle = strtolower(preg_replace('/[^A-Za-z0-9\-.,:_]/', '', $postTitle));
-    }
-    else {
-        return false;
-    }
-    
-    $icsTitleCleaned = strtolower(preg_replace('/[^A-Za-z0-9\-.,:_]/', '', $ics_event['title']));
-    $icsStartDateTime = new DateTime($ics_event['start']);
-    $icsEndDateTime = new DateTime($ics_event['end']);
-
-    $postStartDateTime = new DateTime($postStartStr);
-    $postEndDateTime = new DateTime($postEndStr);
-
-    $startComparisonResult = $postStartDateTime->diff($icsStartDateTime)->invert == 0;
-    $endComparisonResult = $postEndDateTime->diff($icsEndDateTime)->invert == 0;
-
-    if (DEBUG) {
-        //$titleComparisonResult = strcmp($icsTitleCleaned, $postTitle);
-        //error_log('No Title match: ' . $postTitle . ' | ' . $icsTitleCleaned); 
-        //error_log('No Start match: ' . $postStartDateTime->format('Y-m-d H:i:s') . ' | ' . $icsStartDateTime->format('Y-m-d H:i:s'));
-        //error_log('No End match: ' . $postEndDateTime->format('Y-m-d H:i:s') . ' | ' . $icsEndDateTime->format('Y-m-d H:i:s'));
-    }
-    
     // Check if an event with the same title, start, and end date exists
-    if($postTitle == $icsTitleCleaned && $startComparisonResult && $endComparisonResult) {
-        
-        //if (DEBUG) {
-        //    $titleComparisonResult = strcmp($icsTitleCleaned, $postTitle);
-        //    error_log('Title match! ' . $postTitle . ' | ' . $icsTitleCleaned);
-        //    error_log('Start match! ' . $postStartDateTime->format('Y-m-d H:i:s') . ' | ' . $icsStartDateTime->format('Y-m-d H:i:s'));
-        //    error_log('End match! ' . $postEndDateTime->format('Y-m-d H:i:s') . ' | ' . $icsEndDateTime->format('Y-m-d H:i:s'));
-        //}
-        
+    if (get_ics_signature($ics_event) == get_mec_signature($mec_post)) {
+        $postID = $mec_post->ID;
+
         // Event exists, now also check if any detail is changed
         $title = get_the_title($postID);
         $start = get_post_meta($postID, 'mec_start_datetime', true);
@@ -191,7 +187,6 @@ function event_exists($ics_event, $mec_post)
         $ics_time_end = strtotime($ics_event['end']) - strtotime(gmdate('Y-m-d 00:00:00', strtotime($ics_event['end'])));
 
         if ($title != $ics_event['title'] || $start != $ics_event['start'] || $end != $ics_event['end'] || $time_start != $ics_time_start || $time_end != $ics_time_end) {
-            
             // If any detail is changed, then update the event in WordPress
             $event = [
                 'ID' => $postID,
@@ -210,7 +205,7 @@ function event_exists($ics_event, $mec_post)
             update_post_meta($postID, 'mec_start_day_seconds', $ics_time_start);
             update_post_meta($postID, 'mec_end_day_seconds', $ics_time_end);
         }
-        
+
         return true;
     }
 
@@ -231,7 +226,6 @@ function event_exists_uid($ics_event, $mec_post)
 
     // Compare the unique id of the ICS event and the current post
     if ($postUID == $ics_event['uid']) {
-        
         // Event exists, now also check if any detail is changed
         $title = get_the_title($postID);
         $start = get_post_meta($postID, 'mec_start_datetime', true);
@@ -244,7 +238,6 @@ function event_exists_uid($ics_event, $mec_post)
         $ics_time_end = strtotime($ics_event['end']) - strtotime(gmdate('Y-m-d 00:00:00', strtotime($ics_event['end'])));
 
         if ($title != $ics_event['title'] || $start != $ics_event['start'] || $end != $ics_event['end'] || $time_start != $ics_time_start || $time_end != $ics_time_end) {
-            
             // If any detail is changed, then update the event in WordPress
             $event = [
                 'ID' => $postID,
@@ -280,11 +273,11 @@ function get_mec_events($categoryName)
         'tax_query' => [
             [
                 'taxonomy' => 'mec_category',
-                'field'    => 'slug', 
-                'terms'    => $categoryName,
+                'field' => 'slug',
+                'terms' => $categoryName,
             ],
         ],
-        'meta_key' => 'mec_ics_uid'
+        'meta_key' => 'mec_ics_uid',
     ];
 
     $query = new WP_Query($args);
@@ -295,7 +288,6 @@ function get_mec_events($categoryName)
 
     return $valid_posts;
 }
-
 
 // Function to parse ICS content and extract event data.  Also ignores 2nd instance of DESCRIPTION tag in ics
 function parse_ics_content($ics_content)
